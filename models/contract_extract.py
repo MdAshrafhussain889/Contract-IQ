@@ -5,8 +5,10 @@ Stores extracted contract fields in SQLite database.
 
 from datetime import date
 from decimal import Decimal
-from typing import Optional
+from typing import List, Optional
 from sqlmodel import SQLModel, Field
+
+from models.schemas import ExtractedParameter
 
 
 class ContractExtract(SQLModel, table=True):
@@ -94,6 +96,7 @@ class ContractExtractBase(SQLModel):
     default_provisions: Optional[str] = None
     due_date_extension: Optional[str] = None
     special_conditions: Optional[str] = None
+    extracted_parameters: Optional[List[ExtractedParameter]] = None
 
 
 class ContractExtractResponse(ContractExtract):

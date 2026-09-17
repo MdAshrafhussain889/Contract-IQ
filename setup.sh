@@ -38,10 +38,8 @@ else
     fi
 fi
 
-# Create temp directory
-echo "📁 Creating temporary upload directory..."
-mkdir -p /tmp/document_uploads
-echo "✓ Temp directory ready at: /tmp/document_uploads"
+# Temp directory (auto-created by the app on first run)
+echo "📁 tempfolder/ (uploads + markdown) is auto-created by the app on first run"
 
 echo ""
 echo "✅ Setup complete!"

@@ -26,39 +26,58 @@ class ContractExtractionError(Exception):
     pass
 
 
+class InvalidMarkdownFileError(ValueError):
+    """Raised when the supplied path is not a valid markdown file."""
+    pass
+
+
+class MissingApiKeyError(ValueError):
+    """Raised when the OpenAI API key is not configured."""
+    pass
+
+
 class ContractExtractor:
     """Service for extracting contract data using OpenAI GPT."""
 
     def __init__(self):
         """Initialize the extractor with API key."""
         self.api_key = os.getenv("OPENAI_API_KEY")
-        if not self.api_key:
-            raise ValueError("OPENAI_API_KEY environment variable not set")
+        if not self.api_key or self.api_key == "your_openai_api_key_here":
+            raise MissingApiKeyError("OPENAI_API_KEY environment variable not set")
 
         self.base_url = "https://api.openai.com/v1"
         self.model = "gpt-4o-mini"  # Using GPT-4o mini for best performance and cost
 
-    def read_markdown_file(self, file_path: str) -> str:
+    def read_markdown_file(self, file_path: str, base_dir: Optional[str] = None) -> str:
         """
         Read markdown file from the tempfolder structure.
 
         Args:
             file_path: Path to the markdown file
+            base_dir: If provided, the file must live inside this directory
 
         Returns:
             File content as string
 
         Raises:
             FileNotFoundError: If file doesn't exist
+            InvalidMarkdownFileError: If the file is not markdown or escapes base_dir
             IOError: If file cannot be read
         """
-        path = Path(file_path)
+        path = Path(file_path).resolve()
+
+        if base_dir is not None:
+            base = Path(base_dir).resolve()
+            if not path.is_relative_to(base):
+                raise InvalidMarkdownFileError(
+                    f"File must be inside the temporary directory: {file_path}"
+                )
 
         if not path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
 
-        if not path.suffix.lower() == ".md":
-            raise ValueError(f"File must be markdown (.md): {file_path}")
+        if path.suffix.lower() != ".md":
+            raise InvalidMarkdownFileError(f"File must be markdown (.md): {file_path}")
 
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -194,9 +213,10 @@ class ContractExtractor:
                             section_title=ref_data.get("section_title")
                         )
 
+                        raw_value = param.get("parameter_value")
                         extracted_param = ExtractedParameter(
-                            parameter_name=param.get("parameter_name", ""),
-                            parameter_value=param.get("parameter_value"),
+                            parameter_name=str(param.get("parameter_name", "")),
+                            parameter_value=None if raw_value is None else str(raw_value),
                             confidence_score=min(100, max(0, int(param.get("confidence_score", 0)))),
                             reference=reference
                         )
@@ -282,18 +302,23 @@ class ContractExtractor:
         # Validate using Pydantic
         return ContractExtractBase(**normalized)
 
-    def extract_from_file(self, markdown_file_path: str) -> ContractExtractBase:
+    def extract_from_file(
+        self,
+        markdown_file_path: str,
+        base_dir: Optional[str] = None
+    ) -> ContractExtractBase:
         """
         Extract contract fields from a markdown file.
 
         Args:
             markdown_file_path: Path to the markdown file
+            base_dir: If provided, the file must live inside this directory
 
         Returns:
             ContractExtractBase with validated extracted fields
         """
         # Read the file
-        content = self.read_markdown_file(markdown_file_path)
+        content = self.read_markdown_file(markdown_file_path, base_dir=base_dir)
 
         # Extract fields
         return self.extract_fields(content)

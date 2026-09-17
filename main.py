@@ -8,7 +8,7 @@ import shutil
 import json
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
-from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 import logging
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -18,135 +18,145 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 # Use absolute path to ensure .env is loaded regardless of working directory
-from pathlib import Path
 _env_file = Path(__file__).parent / ".env"
 load_dotenv(_env_file, override=True)
 
 # Verify API key is loaded
 _api_key_check = os.getenv("OPENAI_API_KEY")
-if _api_key_check:
-    print(f"✓ OPENAI_API_KEY loaded successfully", flush=True)
+if _api_key_check and _api_key_check != "your_openai_api_key_here":
+    print("OPENAI_API_KEY loaded successfully", flush=True)
 else:
-    print(f"✗ WARNING: OPENAI_API_KEY not found in environment", flush=True)
+    print("WARNING: OPENAI_API_KEY not found in environment", flush=True)
 
-from document_converter import DocumentConverter
+from document_converter import (
+    DocumentConverter,
+    DocumentConversionError,
+    ConversionServiceError,
+)
 from models.contract_extract import ContractExtract, ContractExtractResponse, ContractExtractBase
 from models.schemas import ExtractedParameter
-from services.contract_extractor import get_extractor, ContractExtractionError
+from services.contract_extractor import (
+    get_extractor,
+    ContractExtractionError,
+    InvalidMarkdownFileError,
+    MissingApiKeyError,
+)
 from db import init_db, get_session, engine
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Initialize the database (creates tables and applies lightweight migrations)
+# Module-level so it runs whether launched via `python main.py` or `uvicorn main:app`.
+init_db()
+
 # ==================== Pydantic Models ====================
+
+def _example(value):
+    """Build a Pydantic v2 json_schema_extra dict carrying a Swagger example."""
+    return {"example": value}
+
 
 class RootResponse(BaseModel):
     """Root endpoint response model."""
-    message: str = Field(..., example="Document to Markdown Converter API")
-    status: str = Field(..., example="running")
+    message: str = Field(..., json_schema_extra=_example("Document to Markdown Converter API"))
+    status: str = Field(..., json_schema_extra=_example("running"))
     endpoints: dict = Field(
         ...,
-        example={
-            "POST": "/convert - Upload document and convert to markdown",
-            "GET": "/health - Health check",
-            "GET": "/files - List all converted files",
-            "DELETE": "/cleanup - Delete all temporary files"
-        }
+        json_schema_extra=_example({
+            "POST /convert": "Upload document and convert to markdown",
+            "GET /health": "Health check",
+            "GET /files": "List all converted files",
+            "DELETE /cleanup": "Delete all temporary files",
+            "POST /extract": "Extract contract fields from a markdown file",
+            "GET /extractions": "List all stored extractions",
+            "GET /extractions/{id}": "Get a stored extraction by ID"
+        })
     )
 
 
 class HealthCheckResponse(BaseModel):
     """Health check response model."""
-    status: str = Field(..., example="healthy")
-    temp_dir: str = Field(..., example="/Users/mac/Downloads/contractiq/tempfolder")
+    status: str = Field(..., json_schema_extra=_example("healthy"))
+    temp_dir: str = Field(..., json_schema_extra=_example("tempfolder"))
 
 
 class ConvertSuccessResponse(BaseModel):
     """Successful document conversion response model."""
-    success: bool = Field(..., example=True)
-    message: str = Field(..., example="Document converted successfully")
-    original_file: str = Field(..., example="contract.pdf")
+    success: bool = Field(..., json_schema_extra=_example(True))
+    message: str = Field(..., json_schema_extra=_example("Document converted successfully"))
+    original_file: str = Field(..., json_schema_extra=_example("contract.pdf"))
     original_file_path: str = Field(
         ...,
-        example="/Users/mac/Downloads/contractiq/tempfolder/contract/contract.pdf"
+        json_schema_extra=_example("tempfolder/contract/contract.pdf")
     )
-    original_file_size_bytes: int = Field(..., example=154230)
-    markdown_filename: str = Field(..., example="contract_extracted.md")
+    original_file_size_bytes: int = Field(..., json_schema_extra=_example(154230))
+    markdown_filename: str = Field(..., json_schema_extra=_example("contract_extracted.md"))
     markdown_file_path: str = Field(
         ...,
-        example="/Users/mac/Downloads/contractiq/tempfolder/contract/contract_extracted.md"
+        json_schema_extra=_example("tempfolder/contract/contract_extracted.md")
     )
-    markdown_file_size_bytes: int = Field(..., example=6919)
+    markdown_file_size_bytes: int = Field(..., json_schema_extra=_example(6919))
     file_folder: str = Field(
         ...,
-        example="/Users/mac/Downloads/contractiq/tempfolder/contract"
+        json_schema_extra=_example("tempfolder/contract")
     )
-    folder_name: str = Field(..., example="contract")
+    folder_name: str = Field(..., json_schema_extra=_example("contract"))
     temp_directory: str = Field(
         ...,
-        example="/Users/mac/Downloads/contractiq/tempfolder"
+        json_schema_extra=_example("tempfolder")
     )
-    conversion_status: str = Field(..., example="completed")
+    conversion_status: str = Field(..., json_schema_extra=_example("completed"))
 
 
 class FileInfo(BaseModel):
     """Information about a converted file."""
-    folder_name: str = Field(..., example="Mujeeb_CV_6")
+    folder_name: str = Field(..., json_schema_extra=_example("Mujeeb_CV_6"))
     folder_path: str = Field(
         ...,
-        example="/Users/mac/Downloads/contractiq/tempfolder/Mujeeb_CV_6"
+        json_schema_extra=_example("tempfolder/Mujeeb_CV_6")
     )
-    original_file: Optional[str] = Field(..., example="Mujeeb_CV_6.pdf")
-    original_file_size_bytes: int = Field(..., example=154230)
-    markdown_file: Optional[str] = Field(..., example="Mujeeb_CV_6_extracted.md")
-    markdown_file_size_bytes: int = Field(..., example=6919)
-    total_files: int = Field(..., example=2)
-    created: float = Field(..., example=1694529201.0)
+    original_file: Optional[str] = Field(None, json_schema_extra=_example("Mujeeb_CV_6.pdf"))
+    original_file_size_bytes: int = Field(..., json_schema_extra=_example(154230))
+    markdown_file: Optional[str] = Field(None, json_schema_extra=_example("Mujeeb_CV_6_extracted.md"))
+    markdown_file_size_bytes: int = Field(..., json_schema_extra=_example(6919))
+    total_files: int = Field(..., json_schema_extra=_example(2))
+    created: float = Field(..., json_schema_extra=_example(1694529201.0))
 
 
 class ListFilesResponse(BaseModel):
     """List all converted files response model."""
-    success: bool = Field(..., example=True)
-    total_folders: int = Field(..., example=3)
+    success: bool = Field(..., json_schema_extra=_example(True))
+    total_folders: int = Field(..., json_schema_extra=_example(3))
     temp_directory: str = Field(
         ...,
-        example="/Users/mac/Downloads/contractiq/tempfolder"
+        json_schema_extra=_example("tempfolder")
     )
     folders: List[FileInfo] = Field(
         ...,
-        example=[
+        json_schema_extra=_example([
             {
                 "folder_name": "contract",
-                "folder_path": "/Users/mac/Downloads/contractiq/tempfolder/contract",
+                "folder_path": "tempfolder/contract",
                 "original_file": "contract.pdf",
                 "original_file_size_bytes": 154230,
                 "markdown_file": "contract_extracted.md",
                 "markdown_file_size_bytes": 6919,
                 "total_files": 2,
                 "created": 1694529201.0
-            },
-            {
-                "folder_name": "invoice",
-                "folder_path": "/Users/mac/Downloads/contractiq/tempfolder/invoice",
-                "original_file": "invoice.docx",
-                "original_file_size_bytes": 45600,
-                "markdown_file": "invoice_extracted.md",
-                "markdown_file_size_bytes": 3200,
-                "total_files": 2,
-                "created": 1694529250.0
             }
-        ]
+        ])
     )
 
 
 class CleanupResponse(BaseModel):
     """Cleanup response model."""
-    success: bool = Field(..., example=True)
-    message: str = Field(..., example="Cleaned up 5 files")
+    success: bool = Field(..., json_schema_extra=_example(True))
+    message: str = Field(..., json_schema_extra=_example("Cleaned up 5 items"))
     temp_directory: str = Field(
         ...,
-        example="/Users/mac/Downloads/contractiq/tempfolder"
+        json_schema_extra=_example("tempfolder")
     )
 
 
@@ -154,7 +164,7 @@ class ErrorResponse(BaseModel):
     """Error response model."""
     detail: str = Field(
         ...,
-        example="Unsupported file format: .txt. Supported formats: .pdf, .docx, .doc"
+        json_schema_extra=_example("Unsupported file format: .txt. Supported formats: .doc, .docx, .pdf")
     )
 
 
@@ -164,16 +174,16 @@ class ExtractRequest(BaseModel):
     """Request model for contract field extraction."""
     markdown_file_path: str = Field(
         ...,
-        example="/Users/mac/Downloads/contractiq/tempfolder/contract/contract_extracted.md",
-        description="Full path to the markdown file to extract from"
+        json_schema_extra=_example("tempfolder/contract/contract_extracted.md"),
+        description="Full path to the markdown file to extract from (must be inside the temp directory)"
     )
 
 
 class ExtractedFieldsResponse(BaseModel):
     """Response model for extracted contract fields."""
-    success: bool = Field(..., example=True)
-    message: str = Field(..., example="Contract fields extracted successfully")
-    extraction_id: int = Field(..., example=1)
+    success: bool = Field(..., json_schema_extra=_example(True))
+    message: str = Field(..., json_schema_extra=_example("Contract fields extracted successfully"))
+    extraction_id: int = Field(..., json_schema_extra=_example(1))
     extracted_fields: ContractExtractResponse = Field(
         ...,
         description="Extracted contract fields with database record ID"
@@ -182,13 +192,13 @@ class ExtractedFieldsResponse(BaseModel):
         None,
         description="Structured extracted parameters with confidence scores and references"
     )
-    timestamp: str = Field(..., example="2026-09-12T19:30:00")
+    timestamp: str = Field(..., json_schema_extra=_example("2026-09-12T19:30:00"))
 
 
 class ExtractionListResponse(BaseModel):
     """Response model for listing extractions."""
-    success: bool = Field(..., example=True)
-    total_extractions: int = Field(..., example=5)
+    success: bool = Field(..., json_schema_extra=_example(True))
+    total_extractions: int = Field(..., json_schema_extra=_example(5))
     extractions: List[ContractExtractResponse] = Field(
         ...,
         description="List of all extracted contracts"
@@ -206,13 +216,31 @@ app = FastAPI(
     }
 )
 
+# CORS: allow-list configurable via the CORS_ORIGINS env var (comma-separated).
+_cors_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS", "http://localhost:3000,http://localhost:5173"
+    ).split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Create a persistent temp directory for uploads within the project
 TEMP_UPLOAD_DIR = Path(__file__).parent / "tempfolder"
 TEMP_UPLOAD_DIR.mkdir(exist_ok=True)
+TEMP_UPLOAD_DIR_RESOLVED = TEMP_UPLOAD_DIR.resolve()
 
-# Supported file extensions
-SUPPORTED_EXTENSIONS = {'.pdf', '.docx', '.doc'}
+# Supported file extensions (ordered tuple for stable messages)
+SUPPORTED_EXTENSIONS = ('.pdf', '.docx', '.doc')
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MB
 
 
 @app.get(
@@ -229,10 +257,13 @@ MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
                         "message": "Document to Markdown Converter API",
                         "status": "running",
                         "endpoints": {
-                            "POST": "/convert - Upload document and convert to markdown",
-                            "GET": "/health - Health check",
-                            "GET": "/files - List all converted files",
-                            "DELETE": "/cleanup - Delete all temporary files"
+                            "POST /convert": "Upload document and convert to markdown",
+                            "GET /health": "Health check",
+                            "GET /files": "List all converted files",
+                            "DELETE /cleanup": "Delete all temporary files",
+                            "POST /extract": "Extract contract fields from a markdown file",
+                            "GET /extractions": "List all stored extractions",
+                            "GET /extractions/{id}": "Get a stored extraction by ID"
                         }
                     }
                 }
@@ -250,10 +281,13 @@ async def root():
       "message": "Document to Markdown Converter API",
       "status": "running",
       "endpoints": {
-        "POST": "/convert - Upload document and convert to markdown",
-        "GET": "/health - Health check",
-        "GET": "/files - List all converted files",
-        "DELETE": "/cleanup - Delete all temporary files"
+        "POST /convert": "Upload document and convert to markdown",
+        "GET /health": "Health check",
+        "GET /files": "List all converted files",
+        "DELETE /cleanup": "Delete all temporary files",
+        "POST /extract": "Extract contract fields from a markdown file",
+        "GET /extractions": "List all stored extractions",
+        "GET /extractions/{id}": "Get a stored extraction by ID"
       }
     }
     ```
@@ -262,10 +296,13 @@ async def root():
         message="Document to Markdown Converter API",
         status="running",
         endpoints={
-            "POST": "/convert - Upload document and convert to markdown",
-            "GET": "/health - Health check",
-            "GET": "/files - List all converted files",
-            "DELETE": "/cleanup - Delete all temporary files"
+            "POST /convert": "Upload document and convert to markdown",
+            "GET /health": "Health check",
+            "GET /files": "List all converted files",
+            "DELETE /cleanup": "Delete all temporary files",
+            "POST /extract": "Extract contract fields from a markdown file",
+            "GET /extractions": "List all stored extractions",
+            "GET /extractions/{id}": "Get a stored extraction by ID"
         }
     )
 
@@ -458,10 +495,16 @@ async def convert_document(file: UploadFile = File(..., description="Document fi
     temp_input_path = None
     temp_output_path = None
     file_folder = None
+    success = False
 
     try:
-        # Validate file extension
-        file_extension = Path(file.filename).suffix.lower()
+        # Sanitize the client-supplied filename: strip any directory components
+        # so a value like "../../evil.pdf" cannot escape the temp directory.
+        safe_filename = Path(file.filename).name if file.filename else ""
+        if not safe_filename or safe_filename in {".", ".."}:
+            raise HTTPException(status_code=400, detail="Invalid file name.")
+
+        file_extension = Path(safe_filename).suffix.lower()
         if file_extension not in SUPPORTED_EXTENSIONS:
             raise HTTPException(
                 status_code=400,
@@ -469,30 +512,43 @@ async def convert_document(file: UploadFile = File(..., description="Document fi
                        f"Supported formats: {', '.join(SUPPORTED_EXTENSIONS)}"
             )
 
-        # Validate file size
-        file_content = await file.read()
-        if len(file_content) > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=413,
-                detail=f"File too large. Maximum size: {MAX_FILE_SIZE / (1024*1024)}MB"
-            )
+        # Create a dedicated folder for this document (confined to temp dir)
+        original_filename = Path(safe_filename).stem
+        file_folder = (TEMP_UPLOAD_DIR / original_filename).resolve()
+        temp_input_path = (file_folder / safe_filename).resolve()
 
-        # Create a dedicated folder for this document
-        original_filename = Path(file.filename).stem  # Filename without extension
-        file_folder = TEMP_UPLOAD_DIR / original_filename
-        file_folder.mkdir(exist_ok=True)
+        if not file_folder.is_relative_to(TEMP_UPLOAD_DIR_RESOLVED) or \
+                not temp_input_path.is_relative_to(TEMP_UPLOAD_DIR_RESOLVED):
+            raise HTTPException(status_code=400, detail="Invalid file name.")
+
+        file_folder.mkdir(parents=True, exist_ok=True)
         logger.info(f"Created folder: {file_folder}")
 
-        # Save uploaded file in the dedicated folder
-        temp_input_path = file_folder / file.filename
-
+        # Stream the upload to disk, enforcing the size limit as we go.
+        total_bytes = 0
         with open(temp_input_path, 'wb') as f:
-            f.write(file_content)
+            while True:
+                chunk = await file.read(UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > MAX_FILE_SIZE:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Maximum size: {MAX_FILE_SIZE / (1024*1024)}MB"
+                    )
+                f.write(chunk)
 
-        logger.info(f"File uploaded to folder: {file.filename} ({len(file_content)} bytes)")
+        if total_bytes == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Document appears to be empty or could not be read."
+            )
+
+        logger.info(f"File uploaded to folder: {safe_filename} ({total_bytes} bytes)")
 
         # Convert document to markdown
-        logger.info(f"Converting {file.filename} to markdown...")
+        logger.info(f"Converting {safe_filename} to markdown...")
         markdown_content = DocumentConverter.convert_document(
             str(temp_input_path),
             file_extension
@@ -515,10 +571,11 @@ async def convert_document(file: UploadFile = File(..., description="Document fi
         original_file_size = os.path.getsize(temp_input_path)
         logger.info(f"Markdown file created: {markdown_filename} ({markdown_file_size} bytes)")
 
+        success = True
         return ConvertSuccessResponse(
             success=True,
             message="Document converted successfully",
-            original_file=file.filename,
+            original_file=safe_filename,
             original_file_path=str(temp_input_path),
             original_file_size_bytes=original_file_size,
             markdown_filename=markdown_filename,
@@ -534,12 +591,34 @@ async def convert_document(file: UploadFile = File(..., description="Document fi
         logger.error(f"Validation error: {e.detail}")
         raise e
 
-    except Exception as e:
-        logger.error(f"Conversion error: {str(e)}")
+    except DocumentConversionError as e:
+        logger.error(f"Conversion failed: {str(e)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not convert document: {str(e)}"
+        )
+
+    except ConversionServiceError as e:
+        logger.error(f"Conversion service error: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Error converting document: {str(e)}"
         )
+
+    except Exception as e:
+        logger.error(f"Conversion error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Error converting document. Please check server logs."
+        )
+
+    finally:
+        # Do not leave partial/broken folders behind on failure.
+        if not success and file_folder is not None and file_folder.exists():
+            try:
+                shutil.rmtree(file_folder)
+            except OSError:
+                logger.warning(f"Could not clean up failed conversion folder: {file_folder}")
 
 
 @app.get(
@@ -697,9 +776,10 @@ async def list_converted_files():
         )
 
     except Exception as e:
+        logger.error(f"Error listing files: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail=f"Error listing files: {str(e)}"
+            detail="Error listing files. Please check server logs."
         )
 
 
@@ -715,7 +795,7 @@ async def list_converted_files():
                 "application/json": {
                     "example": {
                         "success": True,
-                        "message": "Cleaned up 5 files",
+                        "message": "Cleaned up 5 items",
                         "temp_directory": "/Users/mac/Downloads/contractiq/tempfolder"
                     }
                 }
@@ -767,7 +847,7 @@ async def cleanup_temp_files():
     ```json
     {
       "success": true,
-      "message": "Cleaned up 5 files",
+      "message": "Cleaned up 5 items",
       "temp_directory": "/Users/mac/Downloads/contractiq/tempfolder"
     }
     ```
@@ -790,9 +870,10 @@ async def cleanup_temp_files():
         )
 
     except Exception as e:
+        logger.error(f"Error cleaning up files: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail=f"Error cleaning up files: {str(e)}"
+            detail="Error cleaning up files. Please check server logs."
         )
 
 
@@ -935,16 +1016,30 @@ async def extract_contract_fields(
     - `timestamp`: When extraction was performed
     """
     try:
+        # Confine the requested path to the temporary directory.
+        try:
+            requested_path = Path(request.markdown_file_path).resolve()
+        except (OSError, ValueError):
+            raise HTTPException(status_code=400, detail="Invalid markdown_file_path.")
+
+        if not requested_path.is_relative_to(TEMP_UPLOAD_DIR_RESOLVED):
+            raise HTTPException(
+                status_code=400,
+                detail="markdown_file_path must point to a file inside the temporary directory."
+            )
+
         # Get the extractor
         extractor = get_extractor()
 
         # Extract fields from markdown file
-        logger.info(f"Extracting fields from: {request.markdown_file_path}")
-        extracted_data = extractor.extract_from_file(request.markdown_file_path)
+        logger.info(f"Extracting fields from: {requested_path}")
+        extracted_data = extractor.extract_from_file(
+            str(requested_path), base_dir=str(TEMP_UPLOAD_DIR_RESOLVED)
+        )
 
         # Get markdown filename from path
-        markdown_filename = Path(request.markdown_file_path).name
-        folder_path = str(Path(request.markdown_file_path).parent)
+        markdown_filename = requested_path.name
+        folder_path = str(requested_path.parent)
 
         # Create database record
         timestamp = datetime.now().isoformat()
@@ -955,7 +1050,7 @@ async def extract_contract_fields(
         if extracted_data.extracted_parameters:
             extracted_params_list = extracted_data.extracted_parameters
             extracted_params_json = json.dumps(
-                [param.dict() for param in extracted_data.extracted_parameters],
+                [param.model_dump() for param in extracted_data.extracted_parameters],
                 indent=2
             )
 
@@ -989,22 +1084,39 @@ async def extract_contract_fields(
             success=True,
             message="Contract fields extracted successfully",
             extraction_id=db_record.id,
-            extracted_fields=ContractExtractResponse.from_orm(db_record),
+            extracted_fields=ContractExtractResponse.model_validate(db_record, from_attributes=True),
             extracted_parameters=extracted_params_list,
             timestamp=timestamp
         )
+
+    except HTTPException:
+        raise
 
     except FileNotFoundError as e:
         logger.error(f"File not found: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
+    except InvalidMarkdownFileError as e:
+        logger.error(f"Invalid markdown file: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+    except MissingApiKeyError as e:
+        logger.error(f"Missing API key: {str(e)}")
+        raise HTTPException(
+            status_code=503,
+            detail="Extraction service is not configured (missing OPENAI_API_KEY)."
+        )
+
     except ContractExtractionError as e:
         logger.error(f"Extraction error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Extraction error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Extraction failed. Please check server logs.")
 
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error extracting contract: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Error extracting contract. Please check server logs."
+        )
 
 
 @app.get(
@@ -1098,14 +1210,14 @@ async def list_extractions(session: Session = Depends(get_session)):
         return ExtractionListResponse(
             success=True,
             total_extractions=len(extractions),
-            extractions=[ContractExtractResponse.from_orm(e) for e in extractions]
+            extractions=[ContractExtractResponse.model_validate(e, from_attributes=True) for e in extractions]
         )
 
     except Exception as e:
         logger.error(f"Error retrieving extractions: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving extractions: {str(e)}"
+            detail="Error retrieving extractions. Please check server logs."
         )
 
 
@@ -1155,7 +1267,7 @@ async def get_extraction(extraction_id: int, session: Session = Depends(get_sess
             )
 
         logger.info(f"Retrieved extraction {extraction_id}")
-        return ContractExtractResponse.from_orm(extraction)
+        return ContractExtractResponse.model_validate(extraction, from_attributes=True)
 
     except HTTPException:
         raise
@@ -1164,7 +1276,7 @@ async def get_extraction(extraction_id: int, session: Session = Depends(get_sess
         logger.error(f"Error retrieving extraction: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail=f"Error retrieving extraction: {str(e)}"
+            detail="Error retrieving extraction. Please check server logs."
         )
 
 
@@ -1175,15 +1287,13 @@ if __name__ == "__main__":
     # Load environment variables
     load_dotenv()
 
-    print(f"🚀 Starting Document to Markdown Converter API...")
-    print(f"📁 Temporary directory: {TEMP_UPLOAD_DIR}")
+    print("Starting Document to Markdown Converter API...")
+    print(f"Temporary directory: {TEMP_UPLOAD_DIR}")
 
-    # Initialize database
-    print("💾 Initializing database...")
-    init_db()
+    # Database is initialized at module import (see init_db() call above).
 
-    print(f"🌐 Access the API at: http://localhost:8000")
-    print(f"📚 API docs available at: http://localhost:8000/docs")
-    print(f"📖 Alternative docs at: http://localhost:8000/redoc")
+    print("Access the API at: http://localhost:8000")
+    print("API docs available at: http://localhost:8000/docs")
+    print("Alternative docs at: http://localhost:8000/redoc")
 
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)

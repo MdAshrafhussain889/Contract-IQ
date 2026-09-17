@@ -1,10 +1,14 @@
-# Virtual environment
+# =====================================================================
+# Contract-IQ - .gitignore
+# =====================================================================
+
+# ---- Python virtual environment ----
 venv/
 env/
 ENV/
-.venv
+.venv/
 
-# Python
+# ---- Python ----
 __pycache__/
 *.py[cod]
 *$py.class
@@ -26,24 +30,46 @@ wheels/
 .installed.cfg
 *.egg
 
-# IDE
+# ---- Test / coverage / caches ----
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ---- IDE / OS ----
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 .DS_Store
+Thumbs.db
 
-# Temporary files
-*.tmp
-*.log
+# ---- Secrets ----
 .env
 .env.local
+.env.*.local
+!.env.example
 
-# Test and coverage
-.pytest_cache/
-.coverage
-htmlcov/
+# ---- Runtime application data ----
+# Uploaded originals + generated markdown (the API stores these here)
+tempfolder/
+tmp/
 
-# API temp directory
-/tmp/document_uploads/
+# ---- Database ----
+# SQLite database files. data/contracts.db is auto-created on first run.
+data/*.db
+data/*.db-journal
+data/*.sqlite
+data/*.sqlite3
+
+# ---- Reports / lock files / logs ----
+CIQ_API_TEST_REPORT.docx
+~$*.docx
+*.log
+logs/
+
+# ---- Temporary files ----
+*.tmp
+*.temp

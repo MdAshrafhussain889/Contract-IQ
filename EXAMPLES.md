@@ -119,7 +119,7 @@ curl -X DELETE http://localhost:8000/cleanup
 ```json
 {
   "success": true,
-  "message": "Cleaned up 3 files",
+  "message": "Cleaned up 3 items",
   "temp_directory": "/var/folders/xx/document_uploads"
 }
 ```

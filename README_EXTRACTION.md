@@ -381,7 +381,7 @@ python test_extraction_format.py
 ## ❓ FAQ
 
 **Q: Is this backward compatible?**
-A: Yes! Existing code continues to work. The new `extracted_parameters` field is optional and added alongside existing fields.
+A: Yes. The new `extracted_parameters` field is optional and stored alongside the existing fields. Existing databases are upgraded automatically at startup via a lightweight migration that adds the missing column if needed.
 
 **Q: Do I have to use the new format?**
 A: No. The legacy `extracted_fields` object is still returned. You can use whichever format suits your needs.

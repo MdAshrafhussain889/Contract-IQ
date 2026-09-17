@@ -13,6 +13,16 @@ import pytesseract
 from pdf2image import convert_from_path
 
 
+class DocumentConversionError(Exception):
+    """Raised when an uploaded document cannot be parsed/converted (client error)."""
+    pass
+
+
+class ConversionServiceError(Exception):
+    """Raised when conversion fails due to a server/environment problem."""
+    pass
+
+
 class DocumentConverter:
     """Converts various document formats to Markdown."""
 
@@ -20,29 +30,53 @@ class DocumentConverter:
     def convert_pdf_to_markdown(pdf_path: str) -> str:
         """
         Convert PDF to Markdown.
-        Handles both text-based and scanned (image-based) PDFs.
+        Tries pdfplumber first, falls back to PyPDF2, then OCR for scanned PDFs.
         """
-        markdown_content = []
+        pages = []
+        errors = []
 
+        # Primary: pdfplumber
         try:
-            # First try pdfplumber for text extraction
             with pdfplumber.open(pdf_path) as pdf:
-                has_text = False
-
                 for page_num, page in enumerate(pdf.pages, 1):
                     text = page.extract_text()
                     if text and text.strip():
-                        has_text = True
-                        markdown_content.append(f"## Page {page_num}\n\n{text}\n")
-
-                # If no text found, it's likely a scanned PDF - use OCR
-                if not has_text:
-                    markdown_content.append(DocumentConverter._ocr_pdf(pdf_path))
-
+                        pages.append(f"## Page {page_num}\n\n{text}\n")
         except Exception as e:
-            raise Exception(f"Error processing PDF with pdfplumber: {str(e)}")
+            errors.append(f"pdfplumber: {str(e)}")
 
-        return "\n---\n".join(markdown_content) if markdown_content else ""
+        # Fallback: PyPDF2
+        if not pages:
+            try:
+                pages = DocumentConverter._extract_text_pypdf2(pdf_path)
+            except Exception as e:
+                errors.append(f"PyPDF2: {str(e)}")
+
+        if pages:
+            return "\n---\n".join(pages)
+
+        # No embedded text - likely a scanned PDF, try OCR
+        try:
+            return DocumentConverter._ocr_pdf(pdf_path)
+        except (DocumentConversionError, ConversionServiceError):
+            raise
+        except Exception as e:
+            errors.append(f"OCR: {str(e)}")
+
+        raise DocumentConversionError(
+            "Unable to extract text from PDF. " + "; ".join(errors)
+        )
+
+    @staticmethod
+    def _extract_text_pypdf2(pdf_path: str) -> list:
+        """Extract per-page text using PyPDF2 (fallback parser)."""
+        markdown_content = []
+        reader = PdfReader(pdf_path)
+        for page_num, page in enumerate(reader.pages, 1):
+            text = page.extract_text()
+            if text and text.strip():
+                markdown_content.append(f"## Page {page_num}\n\n{text}\n")
+        return markdown_content
 
     @staticmethod
     def _ocr_pdf(pdf_path: str) -> str:
@@ -60,12 +94,12 @@ class DocumentConverter:
                     markdown_content.append(f"## Page {page_num}\n\n{text}\n")
 
         except pytesseract.TesseractNotFoundError:
-            raise Exception(
+            raise ConversionServiceError(
                 "Tesseract is not installed. For OCR support, install: "
                 "brew install tesseract (macOS) or apt-get install tesseract-ocr (Linux)"
             )
         except Exception as e:
-            raise Exception(f"Error during OCR: {str(e)}")
+            raise DocumentConversionError(f"Error during OCR: {str(e)}")
 
         return "\n---\n".join(markdown_content)
 
@@ -101,7 +135,7 @@ class DocumentConverter:
                     markdown_content.append("| " + " | ".join(row_cells) + " |\n")
 
         except Exception as e:
-            raise Exception(f"Error processing DOCX: {str(e)}")
+            raise DocumentConversionError(f"Error processing DOCX: {str(e)}")
 
         return "".join(markdown_content)
 
@@ -115,7 +149,7 @@ class DocumentConverter:
             # Attempt to open as docx (works for some .doc files)
             return DocumentConverter.convert_docx_to_markdown(doc_path)
         except Exception:
-            raise Exception(
+            raise DocumentConversionError(
                 "DOC format (.doc) has limited support. "
                 "Please convert to DOCX (.docx) for better compatibility."
             )
