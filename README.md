@@ -8,26 +8,96 @@ Upload PDF/DOCX/DOC  -->  /convert  -->  Markdown  -->  /extract  -->  12 field 
 
 ---
 
+## Quick Start (from scratch to running in ~5 minutes)
+
+> Anyone can set this up on their own machine. You only need **Git**, **Python 3.10**, and an **OpenAI API key**. Copy-paste the commands for your OS.
+
+```bash
+# 1) Clone the repo and enter the folder
+git clone https://github.com/MdAshrafhussain889/Contract-IQ.git
+cd Contract-IQ
+```
+
+### Windows (PowerShell)
+
+```powershell
+# 2) Check Python 3.10 is installed (see Section: Install Python 3.10 if not)
+python --version
+
+# 3) Create and activate a virtual environment
+python -m venv venv
+venv\Scripts\Activate.ps1
+
+# 4) Install dependencies
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+# 5) Create your .env file, then set your API key inside it
+Copy-Item .env.example .env
+notepad .env          # EDIT: set OPENAI_API_KEY=sk-... then Save
+
+# 6) Start the server
+python main.py
+```
+
+### macOS / Linux
+
+```bash
+# 2) Check Python 3.10 is installed (see Section: Install Python 3.10 if not)
+python3.10 --version
+
+# 3) Create and activate a virtual environment
+python3.10 -m venv venv
+source venv/bin/activate
+
+# 4) Install dependencies
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+# 5) Create your .env file, then set your API key inside it
+cp .env.example .env
+nano .env             # EDIT: set OPENAI_API_KEY=sk-... then Save
+
+# 6) Start the server
+python main.py
+```
+
+### One-command scripts (optional)
+
+| OS | Command | What it does |
+|---|---|---|
+| Windows | `setup.bat` then `start.bat` | Creates venv, installs deps, copies `.env.example` → `.env`, then starts the server |
+| macOS / Linux | `sh setup.sh` then `sh start_app.sh` | Same as above (loads `.env`, starts the server) |
+
+### You're done when...
+
+1. The terminal shows `Database initialized at: .../data/contracts.db` and `Uvicorn running on http://localhost:8000`
+2. Opening **http://localhost:8000/docs** shows the interactive Swagger UI
+3. Upload `test_contract.pdf` via **POST /convert** → `200`; then run **POST /extract** on the returned `markdown_file_path` → populated contract fields (this needs your key in `.env`)
+
+---
+
 ## Table of Contents
 
-1. [Features](#features)
-2. [Project Structure](#project-structure)
-3. [Tech Stack](#tech-stack)
-4. [Prerequisites](#prerequisites)
-5. [1. Install Python 3.10](#1-install-python-310)
-6. [2. Get an OpenAI API Key](#2-get-an-openai-api-key)
-7. [3. Install Tesseract (optional, for scanned PDFs)](#3-install-tesseract-optional-for-scanned-pdfs)
-8. [4. Clone & Run — Step by Step](#4-clone--run--step-by-step)
-9. [Database Setup](#database-setup)
-10. [API Endpoints](#api-endpoints)
-11. [Testing with Swagger UI](#testing-with-swagger-ui)
-12. [Running the Test Suite](#running-the-test-suite)
-13. [Usage Examples](#usage-examples)
-14. [Error Handling](#error-handling)
-15. [Configuration Reference](#configuration-reference)
-16. [Troubleshooting](#troubleshooting)
-17. [Deployment Notes](#deployment-notes)
-18. [License](#license)
+- [Quick Start](#quick-start-from-scratch-to-running-in-5-minutes) *(above)*
+- [Features](#features)
+- [Project Structure](#project-structure)
+- [Tech Stack](#tech-stack)
+- [Prerequisites](#prerequisites)
+- [Install Python 3.10](#1-install-python-310)
+- [Get an OpenAI API Key](#2-get-an-openai-api-key)
+- [Install Tesseract (optional, for scanned PDFs)](#3-install-tesseract-optional-for-scanned-pdfs)
+- [Clone & Run — Step by Step](#4-clone--run--step-by-step)
+- [Database Setup](#database-setup)
+- [API Endpoints](#api-endpoints)
+- [Testing with Swagger UI](#testing-with-swagger-ui)
+- [Running the Test Suite](#running-the-test-suite)
+- [Usage Examples](#usage-examples)
+- [Error Handling](#error-handling)
+- [Configuration Reference](#configuration-reference)
+- [Troubleshooting](#troubleshooting)
+- [Deployment Notes](#deployment-notes)
+- [License](#license)
 
 ---
 
@@ -81,6 +151,8 @@ Contract-IQ/
 ├── pytest.ini                   # Pytest configuration
 ├── .env.example                 # Sample environment file (copy to .env)
 ├── .gitignore
+├── setup.bat  /  start.bat      # Windows one-command setup / start
+├── setup.sh   /  start_app.sh   # macOS / Linux one-command setup / start
 ├── data/                        # Auto-created: contracts.db (SQLite)
 ├── tempfolder/                  # Auto-created: uploads + generated markdown
 ├── test_contract.pdf            # Sample contract for quick testing
@@ -212,6 +284,8 @@ If Tesseract is missing, scanned PDFs return a clear `500` ("Tesseract is not in
 git clone https://github.com/MdAshrafhussain889/Contract-IQ.git
 cd Contract-IQ
 ```
+
+> New here? If you followed the [Quick Start](#quick-start-from-scratch-to-running-in-5-minutes) section above, skip straight to `setup.bat` (Windows) or `sh setup.sh` (macOS/Linux). The detailed manual steps below are exactly what those scripts do automatically.
 
 ### Step 2 — Create a virtual environment
 
